@@ -1,3 +1,10 @@
+# --- 放在文件开头导入 ---
+import os
+import sys
+import json
+import requests
+
+
 # w_pattern_alert.py
 import os
 import time
@@ -6,6 +13,19 @@ import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
 import telegram
+
+
+# ====== 以下增加读取 Telegram 参数 ======
+def send_telegram_message(token, chat_id, text):
+    """
+    利用 Telegram Bot HTTP API 发送消息
+    """
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    resp = requests.post(url, data=data)
+    # 这里可以简单检查一下 resp.status_code 或 resp.json()
+    return resp.ok
+
 
 # ------------------ 參數區 ------------------
 TICKER = "2330.tw"
@@ -173,6 +193,44 @@ def run_once():
         print(f"初始資金 {INITIAL_CAPITAL:.2f} → 最終 {cap:.2f}，累積報酬 {cum_ret:.2f}%\n")
     else:
         print("⚠️ 回測：本次無交易信號。")
+
+# ====== 在 main() 或脚本末尾，把结果通过 Telegram 发出去 ======
+if __name__ == "__main__":
+    # 从环境变量或命令行参数读取： 
+    # 我们约定：GitHub Actions 会传入环境变量 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT  = os.getenv("TELEGRAM_CHAT_ID")
+
+    # ====== 下面这部分是回测主逻辑（原来的 detect_w + 回测，生成 results_df） ======
+    # ...（省略前面的回测代码）...
+
+    # 假设此时你已经有了 results_df（pandas DataFrame），里面有 entry_time、entry、exit_time、exit、profit_pct
+    # 你想把每笔信号、收益率发一条消息，或只发今天最新一笔。以下举例把所有交易都发一次。
+
+    if not results_df.empty:
+        for idx, row in results_df.iterrows():
+            text = (
+                f"*W 底信号回测结果*\n"
+                f"• 进场: {row['entry_time']} 价 {row['entry']:.2f}\n"
+                f"• 出场: {row['exit_time']} 价 {row['exit']:.2f}\n"
+                f"• 收益: {row['profit_pct']:.2f}%\n"
+                "--------------------------\n"
+            )
+            if TELEGRAM_TOKEN and TELEGRAM_CHAT:
+                send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT, text)
+            else:
+                print("⚠️ 未设置 TELEGRAM_TOKEN/CHAT，跳过发送。")
+    else:
+        no_sig_text = "今日无 W 底信号产生。"
+        if TELEGRAM_TOKEN and TELEGRAM_CHAT:
+            send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT, no_sig_text)
+        else:
+            print(no_sig_text)
+
+
+
+
+
 
     # 7. （選用）畫一張圖，標出進/出場
     #    如果你想在 GitHub Actions 上產生圖片檔，可以把下面這段取消註解，存成 png：
