@@ -1,0 +1,33 @@
+name: 每日 W 底回测并推送 Telegram
+
+on:
+  schedule:
+    # 每天上午 07:00 UTC (-4 小时比台北时晚)，如果你想改成北京时间每天晚上 12 点，可改成 '0 16 * * *'
+    - cron: "0 23 * * *"  # 这是 UTC 时间的每天 23:00，对应台北时间的早上 07:00 (UTC+8)
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 仓库内容
+        uses: actions/checkout@v3
+
+      - name: 设置 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas numpy matplotlib scipy python-telegram-bot
+
+      - name: 执行回测脚本并推送结果到 Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python w_pattern_backtest.py \
+            --telegram-token "$TELEGRAM_BOT_TOKEN" \
+            --telegram-chat "$TELEGRAM_CHAT_ID"
