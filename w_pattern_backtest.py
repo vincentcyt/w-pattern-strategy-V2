@@ -36,7 +36,12 @@ CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID")
 bot = telegram.Bot(token=BOT_TOKEN)
 
 # ====== 從 Yahoo Finance 下載資料 ======
-df = yf.download(TICKER, interval=INTERVAL, period=PERIOD)
+df = yf.download(
+    TICKER,
+    interval=INTERVAL,
+    period=PERIOD,
+    auto_adjust=False  # 指定不自動調整
+)
 df.dropna(inplace=True)
 close_prices = df["Close"].to_numpy()
 high_prices  = df["High"].to_numpy()
@@ -96,14 +101,20 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi, breakout_pct):
 # 小型 W 底
 min_idx_small = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_SMALL)[0]
 max_idx_small = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_SMALL)[0]
-detect_w(min_idx_small, max_idx_small,
-         P1P3_TOL_SMALL, PULLBACK_LO_SMALL, PULLBACK_HI_SMALL, BREAKOUT_PCT_SMALL)
+detect_w(
+    min_idx_small, max_idx_small,
+    P1P3_TOL_SMALL, PULLBACK_LO_SMALL, PULLBACK_HI_SMALL,
+    BREAKOUT_PCT_SMALL
+)
 
 # 大型 W 底
 min_idx_large = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_LARGE)[0]
 max_idx_large = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_LARGE)[0]
-detect_w(min_idx_large, max_idx_large,
-         P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE, BREAKOUT_PCT_LARGE)
+detect_w(
+    min_idx_large, max_idx_large,
+    P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE,
+    BREAKOUT_PCT_LARGE
+)
 
 # ====== 回測（移動停利 + 固定停損） ======
 results = []
@@ -139,9 +150,9 @@ for entry_idx, entry_price, neckline in pullback_signals:
 
     results.append({
         "entry_time": entry_time,
-        "entry":      entry_price,
+        "entry":      float(entry_price),
         "exit_time":  df.index[exit_idx],
-        "exit":       exit_price,
+        "exit":       float(exit_price),
         "result":     result
     })
 
@@ -150,22 +161,30 @@ if results:
     results_df = pd.DataFrame(results)
     results_df["profit_pct"] = (results_df["exit"] - results_df["entry"]) / results_df["entry"] * 100
 
-    # 傳送文字訊息
-    msg = ["📈 今日 W 底偵測與回測結果："]
+    # 組合訊息列表
+    msg_lines = ["📈 今日 W 底偵測與回測結果："]
     cap = INITIAL_CAPITAL
-    for _, row in results_df.iterrows():
-        etime = row["entry_time"].strftime("%Y-%m-%d %H:%M")
-        xtime = row["exit_time"].strftime("%Y-%m-%d %H:%M")
-        pct   = f"{row['profit_pct']:.2f}%"
-        cap  *= (1 + row["profit_pct"] / 100)
-        msg.append(f"進場: {etime} @ {row['entry']:.2f} → 出場: {xtime} @ {row['exit']:.2f} | 報酬: {pct}")
+
+    for idx, row in results_df.iterrows():
+        entry_time_str = row["entry_time"].strftime("%Y-%m-%d %H:%M")
+        exit_time_str  = row["exit_time"].strftime("%Y-%m-%d %H:%M")
+        entry_price    = float(row["entry"])
+        exit_price     = float(row["exit"])
+        profit_pct     = float(row["profit_pct"])
+        cap *= (1 + profit_pct / 100)
+
+        msg_lines.append(
+            f"{idx+1}. 進場: {entry_time_str} @ {entry_price:.2f} → 出場: {exit_time_str} @ {exit_price:.2f} | 報酬: {profit_pct:.2f}%"
+        )
 
     cum_pct = (cap / INITIAL_CAPITAL - 1) * 100
-    msg.append(f"💰 初始: {INITIAL_CAPITAL:.2f} → 最終: {cap:.2f} | 累積報酬: {cum_pct:.2f}%")
-    text = "\n".join(msg)
+    msg_lines.append(f"💰 初始: {INITIAL_CAPITAL:.2f} → 最終: {cap:.2f} | 累積報酬: {cum_pct:.2f}%")
+    text = "\n".join(msg_lines)
+
+    # 推播至 Telegram
     bot.send_message(chat_id=CHAT_ID, text=text)
 
-    # 顯示 DataFrame 與圖表
+    # 同時在標準輸出顯示
     print(results_df)
     print(text)
 
@@ -179,7 +198,7 @@ plt.figure(figsize=(14, 6))
 plt.plot(df["Close"], color="gray", alpha=0.5, label="Close")
 
 plotted = set()
-# 標記進場
+# 標記進場點
 for idx, price, _ in pullback_signals:
     label = "Entry"
     if label not in plotted:
@@ -188,7 +207,7 @@ for idx, price, _ in pullback_signals:
     else:
         plt.scatter(df.index[idx], price, marker="^", color="green")
 
-# 標記出場
+# 標記出場點
 for rec in results:
     label = "Exit"
     xt = rec["exit_time"]
