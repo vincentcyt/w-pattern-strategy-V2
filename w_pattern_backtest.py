@@ -164,76 +164,78 @@ for entry_idx, entry_price, neckline in pullback_signals:
 
 # ====== 构造要发送给 Telegram 的消息 ======
 msg_lines = []
+    if results:
+        total_trades = len(results_df)
+        cap = INITIAL_CAPITAL
+        for p_pct in results_df['profit_pct']:
+            cap *= (1 + float(p_pct) / 100)
+        cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
 
-# （1）先加一个“历史回测总笔数”＋“历史回测累计回报”
-if results:
-    results_df = pd.DataFrame(results)
-    results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
+        msg_lines.append("=== 历史回测总览 ===")
+        msg_lines.append(f"• 总交易笔数：{total_trades}")
+        msg_lines.append(f"• 累计回报率：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+        msg_lines.append("")
 
-    # 历史回测总笔数
-    total_trades = len(results_df)
+        # —— 这里把 DataFrame 转成等宽字符串表格 —— #
+        # 我们只取几个关键列，entry_time, entry, exit_time, exit, profit_pct
+        df_display = results_df.copy()
+        # 把 entry_time 和 exit_time 转成 “字符串” 格式，方便 to_string 输出
+        df_display['entry_time'] = df_display['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
+        df_display['exit_time']  = df_display['exit_time'].dt.strftime('%Y-%m-%d %H:%M')
+        df_display['entry']      = df_display['entry'].map(lambda x: f"{float(x):.2f}")
+        df_display['exit']       = df_display['exit'].map(lambda x: f"{float(x):.2f}")
+        df_display['profit_pct'] = df_display['profit_pct'].map(lambda x: f"{float(x):.2f}%")
 
-    # 历史回测累计资金曲线
-    cap = INITIAL_CAPITAL
-    for p_pct in results_df['profit_pct']:
-        cap *= (1 + float(p_pct) / 100)
-    cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
+        # 只保留这五列，且重命名一下表头
+        df_display = df_display[[
+            'entry_time', 'entry', 'exit_time', 'exit', 'profit_pct'
+        ]].rename(columns={
+            'entry_time': 'Entry Time',
+            'entry':      'Entry',
+            'exit_time':  'Exit Time',
+            'exit':       'Exit',
+            'profit_pct': 'Profit(%)'
+        })
 
-    msg_lines.append(f"=== 历史回测总览 ===")
-    msg_lines.append(f"• 总交易笔数：{total_trades}")
-    msg_lines.append(f"• 累计回报率：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
-    msg_lines.append("")
+        # 用 to_string 生成等宽字体的文本；index=False 表示不打印行索引
+        table_text = df_display.to_string(index=False)
 
-    # （2）再列出每一笔交易的详细进／出场和收益
-    msg_lines.append("=== 逐笔交易明细 ===")
-    for idx, row in results_df.iterrows():
-        e_price = float(row['entry'])
-        x_price = float(row['exit'])
-        p_pct   = float(row['profit_pct'])
-        line = (
-            f"{idx+1}. Entry: {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
-            f"Exit: {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}  "
-            f"Profit: {p_pct:.2f}%"
-        )
-        msg_lines.append(line)
-else:
-    # 历史回测没有信号
-    msg_lines.append("⚠️ 历史回测未能检测到任何交易信号。")
+        # 将表格包在 ``` 三引号里，以代码块的形式发给 Telegram
+        msg_lines.append("=== 逐笔交易明细（等宽表格） ===")
+        msg_lines.append("```")
+        msg_lines.append(table_text)
+        msg_lines.append("```")
+    else:
+        msg_lines.append("⚠️ 历史回测未能检测到任何交易信号。")
 
-# （3）当日是否有新信号？ 
-# 转成「UTC naive 日期」后做比较
-today_utc_date = pd.Timestamp.utcnow().normalize()
-new_today_signals = []
-if results:
-    for r in results:
-        # 将 entry_time（带时区）统一转成 UTC 且去掉时区后再比对「日期」
-        entry_dt_utc = r['entry_time'].tz_convert('UTC').tz_localize(None)
-        if entry_dt_utc.date() == today_utc_date.date():
-            new_today_signals.append(r)
+    # —— 当日新信号部分（同之前） —— #
+    msg_lines.append("")  # 空行
+    today_utc_date = pd.Timestamp.utcnow().normalize()
+    new_today_signals = []
+    if results:
+        for r in results:
+            entry_dt_utc = r['entry_time'].tz_convert('UTC').tz_localize(None)
+            if entry_dt_utc.date() == today_utc_date.date():
+                new_today_signals.append(r)
 
-msg_lines.append("")  # 空行分隔
-if new_today_signals:
-    msg_lines.append(f"📈 今日新信号：共 {len(new_today_signals)} 笔")
-    for idx, r in enumerate(new_today_signals, start=1):
-        e_price = float(r['entry'])
-        x_dt    = r['exit_time']
-        line = (
-            f"{idx}. Entry: {r['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
-            f"(Trigger Time: {r['exit_time'].strftime('%Y-%m-%d %H:%M')})"
-        )
-        msg_lines.append(line)
-else:
-    msg_lines.append("📊 今日无 W 底新信号。")
+    if new_today_signals:
+        msg_lines.append(f"📈 今日新信号：共 {len(new_today_signals)} 笔")
+        for idx, r in enumerate(new_today_signals, start=1):
+            e_price = float(r['entry'])
+            line = (
+                f"{idx}. Entry: {r['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
+                f"(Trigger Time: {r['exit_time'].strftime('%Y-%m-%d %H:%M')})"
+            )
+            msg_lines.append(line)
+    else:
+        msg_lines.append("📊 今日无 W 底新信号。")
 
-final_msg = "\n".join(msg_lines)
+    final_msg = "\n".join(msg_lines)
 
-
-# ====== 把消息发送到 Telegram —— 注意用 asyncio.run(awaitable) =====
-async def _send():
-    await bot.send_message(chat_id=CHAT_ID, text=final_msg)
-
-# 直接在脚本里 run
-asyncio.run(_send())
+    # 异步发送给 Telegram
+    async def _send():
+        await bot.send_message(chat_id=CHAT_ID, text=final_msg, parse_mode="Markdown")
+    asyncio.run(_send())
 
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
