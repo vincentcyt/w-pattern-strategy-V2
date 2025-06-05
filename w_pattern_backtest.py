@@ -180,7 +180,7 @@ if results:
     print(f"累计回报: {cum_ret:.2f}%\n")
 
     # ====== 发送 Telegram 消息 ======
-    msg = f"📊 {TICKER} W 底策略回测结果：\n\n"
+msg = f"📊 {TICKER} W 底策略回测结果：\n\n"
     for idx, row in results_df.iterrows():
         entry_t_str = row['entry_time'].strftime('%Y-%m-%d %H:%M')
         exit_t_str  = row['exit_time'].strftime('%Y-%m-%d %H:%M')
@@ -196,8 +196,8 @@ if results:
     bot.send_message(chat_id=CHAT_ID, text=msg)
 
 else:
-    print("⚠️ 无交易信号，共 0 个信号")
-    bot.send_message(chat_id=CHAT_ID, text=f"⚠️ {TICKER} 在给定期间内未检测到 W 底信号。")
+    # 如果 pullback_signals 非空但 results 为空（极少情况），也视为今日无信号
+    bot.send_message(chat_id=CHAT_ID, text=f"❌ {TICKER} 今日無訊號")
 
 # ====== 绘图 ======
 fig, ax = plt.subplots(figsize=(14, 7))
