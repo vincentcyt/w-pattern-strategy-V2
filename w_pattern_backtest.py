@@ -24,7 +24,7 @@ if not BOT_TOKEN or not CHAT_ID:
 bot = Bot(token=BOT_TOKEN)
 
 # ====== 参数区（方便调整） ======
-TICKER = "2330.tw"       # 如果无法下载，可改为大写 "2330.TW"
+TICKER = "2330.TW"       # 如果无法下载，可改为大写 "2330.TW"
 INTERVAL = "60m"
 PERIOD   = "600d"
 
