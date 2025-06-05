@@ -8,12 +8,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 import telegram
+from telegram import Bot
 
 # ====== 环境变量（请在 GitHub Secrets 或本地环境中设置这两个） ======
 # BOT_TOKEN: 你从 @BotFather 那里得到的 Bot 令牌
 # CHAT_ID:  你要发送消息的 Telegram 聊天 ID（可以是私聊 ID 或 群组 ID）
-BOT_TOKEN ="7231722124:AAHyhoDh04thsN-F3vRxsrxWIDp7WUOzuBk"
-CHAT_ID   = "1243234108"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
+
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("需要在环境变量里设置 BOT_TOKEN 和 CHAT_ID")
 
 bot = telegram.Bot(token=BOT_TOKEN)
 
