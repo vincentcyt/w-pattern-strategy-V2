@@ -7,30 +7,30 @@ from scipy.signal import argrelextrema
 import telegram
 
 # ====== 可調整參數區塊 ======
-TICKER = "2330.TW"           # Yahoo Finance 代碼
+TICKER = "2330.TW"           # Yahoo Finance 上的股票代碼
 INTERVAL = "60m"             # K 線週期
-PERIOD = "600d"              # 取樣天數
+PERIOD = "600d"              # 往前取 600 日的資料
 
 # 小型 W 底參數
-MIN_ORDER_SMALL = 3          # 極值偵測 window
-P1P3_TOL_SMALL = 0.08        # P1-P3 價格容忍度
-PULLBACK_LO_SMALL = 0.99     # 拉回下限
-PULLBACK_HI_SMALL = 1.01     # 拉回上限
-BREAKOUT_PCT_SMALL = 0.005   # 頸線突破百分比
+MIN_ORDER_SMALL    = 3       # 極值偵測 window
+P1P3_TOL_SMALL     = 0.08    # P1-P3 價格容忍度
+PULLBACK_LO_SMALL  = 0.99    # 拉回下限
+PULLBACK_HI_SMALL  = 1.01    # 拉回上限
+BREAKOUT_PCT_SMALL = 0.005   # 突破頸線百分比
 
 # 大型 W 底參數
-MIN_ORDER_LARGE = 24         # 大型極值偵測 window (約一天以上)
-P1P3_TOL_LARGE = 0.25        # P1-P3 價格容忍度
-PULLBACK_LO_LARGE = 0.95     # 拉回下限
-PULLBACK_HI_LARGE = 1.05     # 拉回上限
-BREAKOUT_PCT_LARGE = 0.0025  # 頸線突破百分比
+MIN_ORDER_LARGE    = 24      # 大型極值偵測 window (約一天以上)
+P1P3_TOL_LARGE     = 0.25    # P1-P3 價格容忍度
+PULLBACK_LO_LARGE  = 0.95    # 拉回下限
+PULLBACK_HI_LARGE  = 1.05    # 拉回上限
+BREAKOUT_PCT_LARGE = 0.0025  # 突破頸線百分比
 
 # 停利停損與資金參數
-STOP_LOSS_PCT = 0.03
-TRAILING_PCT  = 0.05
-INITIAL_CAPITAL = 100.0
+STOP_LOSS_PCT    = 0.03
+TRAILING_PCT     = 0.05
+INITIAL_CAPITAL  = 100.0
 
-# Telegram 設定 (在執行環境或 GitHub Actions Secrets 裡設定)
+# Telegram 設定 (建議放在環境變數，不要直接寫死在程式)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "YOUR_CHAT_ID")
 bot = telegram.Bot(token=BOT_TOKEN)
@@ -40,21 +40,27 @@ df = yf.download(
     TICKER,
     interval=INTERVAL,
     period=PERIOD,
-    auto_adjust=False  # 指定不自動調整
+    auto_adjust=False      # 明確關閉 auto_adjust，與舊版 yfinance 行為相符
 )
 df.dropna(inplace=True)
+
+# 把價格轉成 NumPy 陣列
 close_prices = df["Close"].to_numpy()
 high_prices  = df["High"].to_numpy()
 low_prices   = df["Low"].to_numpy()
 
 # ====== 偵測 W 底信號 ======
-pullback_signals = []
-pattern_points   = []
+pullback_signals = []   # (進場索引, 觸發價格, 頸線價)
+pattern_points   = []   # (p1, p1v, p2, p2v, p3, p3v, bo_index, bo_v, pb_v, tr_v, breakout_pct)
 
 def detect_w(min_idx, max_idx, tol_p1p3, lo, hi, breakout_pct):
     """
-    偵測 W 底形態，條件：P1 < P2, P3 < P2；P1 與 P3 價格接近；
-    突破、拉回、再突破觸發信號。
+    偵測 W 底形態：
+      1. P1 < P2, P3 < P2
+      2. P1 與 P3 價格差距在 tol_p1p3 以內
+      3. P3 之後第一次打破頸線(bo_v > 頸線 * (1+breakout_pct))
+      4. 拉回 (neckline * lo < pb_v < neckline * hi)
+      5. 再次觸發(tr_v > pb_v)
     """
     for i in range(1, len(min_idx)):
         p1 = int(min_idx[i - 1])
@@ -71,7 +77,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi, breakout_pct):
         # 基本形態：P1 < P2 且 P3 < P2
         if not (p1v < p2v and p3v < p2v):
             continue
-        # P1-P3 價差容忍度
+        # P1-P3 價格相似度檢查
         if abs(p1v - p3v) / p1v > tol_p1p3:
             continue
 
@@ -90,11 +96,10 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi, breakout_pct):
         # 拉回條件
         if not (neckline * lo < pb_v < neckline * hi):
             continue
-        # 再破條件
+        # 再次觸發(tr_v > pb_v)
         if tr_v <= pb_v:
             continue
 
-        # 記錄進場索引、信號價格與頸線價格
         pullback_signals.append((bo_i + 4, tr_v, neckline))
         pattern_points.append((p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, breakout_pct))
 
@@ -125,24 +130,26 @@ for entry_idx, entry_price, neckline in pullback_signals:
     exit_price = None
     result     = None
 
-    # 從進場到觸及停利/停損或結束
+    # 持有期：從 entry_idx 開始往後，若觸及停利或停損就離場
     for j in range(1, len(df) - entry_idx):
         high = float(high_prices[entry_idx + j])
         low  = float(low_prices[entry_idx + j])
 
+        # 更新最高點
         if high > peak:
             peak = high
+        # 計算移動停利與固定停損
         trail_stop = peak * (1 - TRAILING_PCT)
         fixed_stop = entry_price * (1 - STOP_LOSS_PCT)
         stop_level = max(trail_stop, fixed_stop)
 
         if low <= stop_level:
-            result = "win" if peak > entry_price else "loss"
+            result     = "win" if peak > entry_price else "loss"
             exit_price = stop_level
             exit_idx   = entry_idx + j
             break
 
-    # 若未觸及則收盤平倉
+    # 如果從頭到尾都沒觸及停利/停損，就在最後一根 K 線收盤平倉
     if result is None:
         exit_idx   = len(df) - 1
         exit_price = float(close_prices[exit_idx])
@@ -156,16 +163,18 @@ for entry_idx, entry_price, neckline in pullback_signals:
         "result":     result
     })
 
-# ====== 結果整理 & Telegram 推播 ======
+# ====== 整理回測結果 & 推播到 Telegram ======
 if results:
     results_df = pd.DataFrame(results)
+    # 每筆交易的報酬率 (%)
     results_df["profit_pct"] = (results_df["exit"] - results_df["entry"]) / results_df["entry"] * 100
 
-    # 組合訊息列表
+    # 組合要推播的文字
     msg_lines = ["📈 今日 W 底偵測與回測結果："]
     cap = INITIAL_CAPITAL
 
     for idx, row in results_df.iterrows():
+        # 確保取出純 Python 型別，再用 f-string 做格式化
         entry_time_str = row["entry_time"].strftime("%Y-%m-%d %H:%M")
         exit_time_str  = row["exit_time"].strftime("%Y-%m-%d %H:%M")
         entry_price    = float(row["entry"])
@@ -174,31 +183,30 @@ if results:
         cap *= (1 + profit_pct / 100)
 
         msg_lines.append(
-            f"{idx+1}. 進場: {entry_time_str} @ {entry_price:.2f} → 出場: {exit_time_str} @ {exit_price:.2f} | 報酬: {profit_pct:.2f}%"
+            f"{idx+1}. Entry: {entry_time_str} @ {entry_price:.2f} → Exit: {exit_time_str} @ {exit_price:.2f} | 報酬: {profit_pct:.2f}%"
         )
 
     cum_pct = (cap / INITIAL_CAPITAL - 1) * 100
-    msg_lines.append(f"💰 初始: {INITIAL_CAPITAL:.2f} → 最終: {cap:.2f} | 累積報酬: {cum_pct:.2f}%")
-    text = "\n".join(msg_lines)
+    msg_lines.append(f"💰 初始資金 {INITIAL_CAPITAL:.2f} → 最終資金 {cap:.2f} | 累積報酬 {cum_pct:.2f}%")
 
-    # 推播至 Telegram
-    bot.send_message(chat_id=CHAT_ID, text=text)
-
-    # 同時在標準輸出顯示
+    full_text = "\n".join(msg_lines)
+    # 發送到 Telegram
+    bot.send_message(chat_id=CHAT_ID, text=full_text)
+    # 同時也輸出到 stdout
     print(results_df)
-    print(text)
+    print(full_text)
 
 else:
     notice = f"⚠️ 今日無 W 底交易信號，共偵測到 {len(pullback_signals)} 個候選點"
     bot.send_message(chat_id=CHAT_ID, text=notice)
     print(notice)
 
-# ====== 繪圖 ======
+# ====== 繪圖 (可選) ======
 plt.figure(figsize=(14, 6))
 plt.plot(df["Close"], color="gray", alpha=0.5, label="Close")
 
 plotted = set()
-# 標記進場點
+# 標註進場點
 for idx, price, _ in pullback_signals:
     label = "Entry"
     if label not in plotted:
@@ -207,7 +215,7 @@ for idx, price, _ in pullback_signals:
     else:
         plt.scatter(df.index[idx], price, marker="^", color="green")
 
-# 標記出場點
+# 標註出場點
 for rec in results:
     label = "Exit"
     xt = rec["exit_time"]
@@ -218,33 +226,36 @@ for rec in results:
     else:
         plt.scatter(xt, xv, marker="v", color="red")
 
-# 標記 W 底關鍵點
+# 標註 W 底關鍵點
 for p1, p1v, p2, p2v, p3, p3v, bidx, bo, pb, tr, bpct in pattern_points:
+    # P1
     lbl1 = f"P1_{bpct}"
-    lbl2 = f"P2_{bpct}"
-    lbl3 = f"P3_{bpct}"
-    lblN = f"Neck_{bpct}"
-
     if lbl1 not in plotted:
-        plt.scatter(df.index[p1], p1v, color="blue", marker="o", label=lbl1)
+        plt.scatter(df.index[p1], p1v, color="blue", marker="o", label="P1")
         plotted.add(lbl1)
     else:
         plt.scatter(df.index[p1], p1v, color="blue", marker="o")
 
+    # P2
+    lbl2 = f"P2_{bpct}"
     if lbl2 not in plotted:
-        plt.scatter(df.index[p2], p2v, color="orange", marker="o", label=lbl2)
+        plt.scatter(df.index[p2], p2v, color="orange", marker="o", label="P2")
         plotted.add(lbl2)
     else:
         plt.scatter(df.index[p2], p2v, color="orange", marker="o")
 
+    # P3
+    lbl3 = f"P3_{bpct}"
     if lbl3 not in plotted:
-        plt.scatter(df.index[p3], p3v, color="blue", marker="o", label=lbl3)
+        plt.scatter(df.index[p3], p3v, color="blue", marker="o", label="P3")
         plotted.add(lbl3)
     else:
         plt.scatter(df.index[p3], p3v, color="blue", marker="o")
 
+    # 頸線
+    lblN = f"Neck_{bpct}"
     if lblN not in plotted:
-        plt.hlines(p2v, df.index[p1], df.index[p3], colors="purple", linestyles="dashed", label=lblN)
+        plt.hlines(p2v, df.index[p1], df.index[p3], colors="purple", linestyles="dashed", label="Neckline")
         plotted.add(lblN)
     else:
         plt.hlines(p2v, df.index[p1], df.index[p3], colors="purple", linestyles="dashed")
