@@ -12,11 +12,8 @@ import telegram
 # ====== 环境变量（请在 GitHub Secrets 或本地环境中设置这两个） ======
 # BOT_TOKEN: 你从 @BotFather 那里得到的 Bot 令牌
 # CHAT_ID:  你要发送消息的 Telegram 聊天 ID（可以是私聊 ID 或 群组 ID）
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")
-
-if BOT_TOKEN is None or CHAT_ID is None:
-    raise RuntimeError("请先设置环境变量 BOT_TOKEN 和 CHAT_ID")
+BOT_TOKEN ="7231722124:AAHyhoDh04thsN-F3vRxsrxWIDp7WUOzuBk"
+CHAT_ID   = "7528980634"
 
 bot = telegram.Bot(token=BOT_TOKEN)
 
