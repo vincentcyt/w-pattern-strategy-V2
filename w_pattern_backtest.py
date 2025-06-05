@@ -26,7 +26,7 @@ bot = Bot(token=BOT_TOKEN)
 # ====== 参数区（方便调整） ======
 TICKER = "2330.tw"
 INTERVAL = "60m"
-PERIOD = "600d"
+PERIOD = "200d"
 
 # 小型 W 参数
 MIN_ORDER_SMALL     = 3
