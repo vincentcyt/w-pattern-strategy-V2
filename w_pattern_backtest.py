@@ -47,8 +47,9 @@ TRAILING_PCT    = 0.08
 STOP_PCT        = 0.10
 
 # ====== 数据下载 ======
-# 注意：yfinance.download() 的 auto_adjust 参数在新版被默认改为 True，如果想关闭请显式设置 auto_adjust=False
-df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=False)
+# 注意：yfinance.download() 的 auto_adjust 参数在新版已默认设为 True（即自动做除权除息调整）。
+# 如果你之前特意写了 auto_adjust=False，会拿到“未经调整”的价格，可能导致 W 底无法识别。
+df = yf.download(TICKER, interval=INTERVAL, period=PERIOD)  # 使用默认 auto_adjust=True
 df.dropna(inplace=True)
 
 # 转为 numpy arrays
@@ -132,11 +133,13 @@ for entry_idx, entry_price, neckline in pullback_signals:
     exit_price = None
     exit_idx   = None
 
+    # 从进场点开始，一直到最后一根 K 时检测止盈/止损
     for offset in range(1, len(df) - entry_idx):
         h = float(high_prices[entry_idx + offset].item())
         l = float(low_prices[entry_idx + offset].item())
         peak = max(peak, h)
 
+        # 移动止盈和固定止损
         trail_stop = peak * (1 - TRAILING_PCT)
         fixed_stop = entry_price * (1 - STOP_PCT)
         stop_level = max(trail_stop, fixed_stop)
@@ -148,6 +151,7 @@ for entry_idx, entry_price, neckline in pullback_signals:
             break
 
     if result is None:
+        # 若整个持有期都没被止损/止盈，就跑到最后一根 K 收盘平仓
         exit_idx   = len(df) - 1
         exit_price = float(close_prices[exit_idx].item())
         result     = 'win' if exit_price > entry_price else 'loss'
@@ -166,19 +170,24 @@ if results:
     results_df = pd.DataFrame(results)
     results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
 
-    # 计算当日日期
-    today_utc = pd.Timestamp.utcnow().normalize()
-    # 如果你的 df.index 有本地时区，可改成 .tz_convert("UTC").normalize()
-    # today_local = pd.Timestamp.now(tz=df.index.tz).normalize()
+    # —— 调试：先把整段历史到底有多少笔信号打印一下 —— #
+    print(f"[DEBUG] 历史回测共检测到 {len(results_df)} 笔交易信号")
 
-    # 筛选“今日信号”
+    # 计算当日日期 (UTC)
+    today_utc = pd.Timestamp.utcnow().normalize()
+
+    # 确保 entry_time 是 datetime with timezone，再转成 UTC 日期
+    if not pd.api.types.is_datetime64tz_dtype(results_df['entry_time']):
+        # 如果 df.index 不是 tz-aware，就先 localize 再转 UTC；这里假设你的数据本来是台湾时区
+        results_df['entry_time'] = results_df['entry_time'].dt.tz_localize('Asia/Taipei').dt.tz_convert('UTC')
+
     results_df['entry_date'] = results_df['entry_time'].dt.tz_convert('UTC').dt.normalize()
     todays_df = results_df[results_df['entry_date'] == today_utc]
 
     msg_lines = []
 
     if not todays_df.empty:
-        msg_lines.append(f"📈 今日 ({today_utc.strftime('%Y-%m-%d')}) W 底信号：")
+        msg_lines.append(f"📈 今日（{today_utc.strftime('%Y-%m-%d')}）W 底信号：")
         for idx, row in todays_df.iterrows():
             e_price = float(row['entry'])
             x_price = float(row['exit'])
@@ -201,21 +210,27 @@ if results:
 
     msg_lines.append("\n=== 回测汇总 ===")
     msg_lines.append(f"  • 总交易笔数: {total_trades}")
-    msg_lines.append(f"  • 累计回报率: {cum_ret:.2f}% (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+    msg_lines.append(f"  • 累计回报率: {cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
 
     final_msg = "\n".join(msg_lines)
     bot.send_message(chat_id=CHAT_ID, text=final_msg)
+
 else:
     # 如果完全没有任何交易记录，也要发送“今日无信号”及一个空的回测汇总
-    empty_msg = "📊 今日无 W 底信号\n\n=== 回测汇总 ===\n  • 总交易笔数: 0\n  • 累计回报率: 0.00% (初始资金 100.00 → 最终资金 100.00)"
+    empty_msg = (
+        "📊 今日无 W 底信号\n\n"
+        "=== 回测汇总 ===\n"
+        "  • 总交易笔数: 0\n"
+        "  • 累计回报率: 0.00%  (初始资金 100.00 → 最终资金 100.00)"
+    )
     bot.send_message(chat_id=CHAT_ID, text=empty_msg)
-
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
 if pattern_points:
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df['Close'], color='gray', alpha=0.5, label='Close')
     plotted = set()
+
     def safe_label(lbl):
         if lbl in plotted:
             return "_nolegend_"
