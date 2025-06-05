@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
-from telegram import Bot
+
 
  ====== 参数区（方便调整） ======
 TICKER = "2330.TW"
