@@ -1,11 +1,263 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
 import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import argrelextrema
+from telegram import Bot
 
-# 定义标的与数据区间
-TICKER = "2330.TW"
-PERIOD = "5d"   # 过去 5 天
+# —— 调试：打印环境变量是否存在 —— #
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
+print(f"[DEBUG] BOT_TOKEN is [{'set' if BOT_TOKEN else 'NOT set'}]")
+print(f"[DEBUG] CHAT_ID   is [{'set' if CHAT_ID else 'NOT set'}]")
 
-# 从 Yahoo Finance 下载数据
-df = yf.download(TICKER, period=PERIOD)
+if not BOT_TOKEN or not CHAT_ID:
+    print("❌ ERROR: 环境变量 BOT_TOKEN 或 CHAT_ID 不存在，程序退出。")
+    sys.exit(1)
 
-# 显示结果
-print(df)
+# 初始化 Telegram Bot
+bot = Bot(token=BOT_TOKEN)
+
+# ====== 参数区（方便调整） ======
+TICKER = "2330.tw"
+INTERVAL = "60m"
+PERIOD = "600d"
+
+# 小型 W 参数
+MIN_ORDER_SMALL     = 3
+P1P3_TOL_SMALL      = 0.9
+PULLBACK_LO_SMALL   = 0.8
+PULLBACK_HI_SMALL   = 1.2
+
+# 大型 W 参数
+MIN_ORDER_LARGE     = 200
+P1P3_TOL_LARGE      = 0.9
+PULLBACK_LO_LARGE   = 0.78
+PULLBACK_HI_LARGE   = 1.4
+
+# 统一参数
+BREAKOUT_PCT    = 0.00001
+INITIAL_CAPITAL = 100.0
+TRAILING_PCT    = 0.08
+STOP_PCT        = 0.10
+
+# ====== 数据下载 ======
+# 注意：yfinance.download() 的 auto_adjust 参数在新版已默认设为 True（即自动做除权除息调整）。
+# 如果你之前特意写了 auto_adjust=False，会拿到“未经调整”的价格，可能导致 W 底无法识别。
+df = yf.download(TICKER, interval=INTERVAL, period=PERIOD)  # 使用默认 auto_adjust=True
+df.dropna(inplace=True)
+
+# 转为 numpy arrays
+close_prices = df['Close'].to_numpy()
+high_prices  = df['High'].to_numpy()
+low_prices   = df['Low'].to_numpy()
+
+# ====== 寻找 W 底信号 ======
+pullback_signals = []
+pattern_points   = []
+
+def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
+    """
+    Detect W patterns given extrema indices and tolerances.
+    lo/hi define pullback zone multipliers for neckline.
+    """
+    for i in range(1, len(min_idx)):
+        p1 = int(min_idx[i - 1])
+        p3 = int(min_idx[i])
+
+        # p2 必须是 p1~p3 之间的最高点
+        mids = max_idx[(max_idx > p1) & (max_idx < p3)]
+        if mids.size == 0:
+            continue
+        p2 = int(mids[-1])
+
+        # 取出收盘价
+        p1v = float(close_prices[p1].item())
+        p2v = float(close_prices[p2].item())
+        p3v = float(close_prices[p3].item())
+
+        # 基本形态：两头低中间高
+        if not (p1v < p2v and p3v < p2v):
+            continue
+
+        # P1 与 P3 必须相近
+        if abs(p1v - p3v) / p1v > tol_p1p3:
+            continue
+
+        neckline = p2v
+        bo_i     = p3 + 1
+        if bo_i + 4 >= len(close_prices):
+            continue
+
+        bo_v = float(close_prices[bo_i].item())
+        pb_v = float(close_prices[bo_i + 2].item())
+        tr_v = float(close_prices[bo_i + 4].item())
+
+        # 突破条件：突破点必须高于颈线*(1+BREAKOUT_PCT)
+        if bo_v <= neckline * (1 + BREAKOUT_PCT):
+            continue
+
+        # 拉回区间
+        if not (neckline * lo < pb_v < neckline * hi):
+            continue
+
+        # 触发点必须高于拉回点
+        if tr_v <= pb_v:
+            continue
+
+        pullback_signals.append((bo_i + 4, tr_v, neckline))
+        pattern_points.append((p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol_p1p3))
+
+
+# 小型 W
+min_idx_small = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_SMALL)[0]
+max_idx_small = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_SMALL)[0]
+detect_w(min_idx_small, max_idx_small, P1P3_TOL_SMALL, PULLBACK_LO_SMALL, PULLBACK_HI_SMALL)
+
+# 大型 W
+min_idx_large = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_LARGE)[0]
+max_idx_large = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_LARGE)[0]
+detect_w(min_idx_large, max_idx_large, P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE)
+
+# ====== 回测 ======
+results = []
+for entry_idx, entry_price, neckline in pullback_signals:
+    entry_time = df.index[entry_idx]
+    peak       = entry_price
+    result     = None
+    exit_price = None
+    exit_idx   = None
+
+    # 从进场点开始，一直到最后一根 K 时检测止盈/止损
+    for offset in range(1, len(df) - entry_idx):
+        h = float(high_prices[entry_idx + offset].item())
+        l = float(low_prices[entry_idx + offset].item())
+        peak = max(peak, h)
+
+        # 移动止盈和固定止损
+        trail_stop = peak * (1 - TRAILING_PCT)
+        fixed_stop = entry_price * (1 - STOP_PCT)
+        stop_level = max(trail_stop, fixed_stop)
+
+        if l <= stop_level:
+            result     = 'win' if peak > entry_price else 'loss'
+            exit_price = stop_level
+            exit_idx   = entry_idx + offset
+            break
+
+    if result is None:
+        # 若整个持有期都没被止损/止盈，就跑到最后一根 K 收盘平仓
+        exit_idx   = len(df) - 1
+        exit_price = float(close_prices[exit_idx].item())
+        result     = 'win' if exit_price > entry_price else 'loss'
+
+    results.append({
+        'entry_time': entry_time,
+        'entry':      entry_price,
+        'exit_time':  df.index[exit_idx],
+        'exit':       exit_price,
+        'result':     result
+    })
+
+# ====== 结果展示并推送到 Telegram ======
+# 先把回测结果整理成 DataFrame
+if results:
+    results_df = pd.DataFrame(results)
+    results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
+
+    # —— 调试：先把整段历史到底有多少笔信号打印一下 —— #
+    print(f"[DEBUG] 历史回测共检测到 {len(results_df)} 笔交易信号")
+
+    # 计算当日日期 (UTC)
+    today_utc = pd.Timestamp.utcnow().normalize()
+
+    # 确保 entry_time 是 datetime with timezone，再转成 UTC 日期
+    if not pd.api.types.is_datetime64tz_dtype(results_df['entry_time']):
+        # 如果 df.index 不是 tz-aware，就先 localize 再转 UTC；这里假设你的数据本来是台湾时区
+        results_df['entry_time'] = results_df['entry_time'].dt.tz_localize('Asia/Taipei').dt.tz_convert('UTC')
+
+    results_df['entry_date'] = results_df['entry_time'].dt.tz_convert('UTC').dt.normalize()
+    todays_df = results_df[results_df['entry_date'] == today_utc]
+
+    msg_lines = []
+
+    if not todays_df.empty:
+        msg_lines.append(f"📈 今日（{today_utc.strftime('%Y-%m-%d')}）W 底信号：")
+        for idx, row in todays_df.iterrows():
+            e_price = float(row['entry'])
+            x_price = float(row['exit'])
+            p_pct   = float(row['profit_pct'])
+            line = (
+                f"  • Signal {idx+1}: Entry {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}, "
+                f"Exit {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}, "
+                f"Profit {p_pct:.2f}%"
+            )
+            msg_lines.append(line)
+    else:
+        msg_lines.append("📊 今日无 W 底信号")
+
+    # 加入“回测汇总”部分
+    total_trades = len(results_df)
+    cap = INITIAL_CAPITAL
+    for p_pct in results_df['profit_pct']:
+        cap *= (1 + float(p_pct) / 100)
+    cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
+
+    msg_lines.append("\n=== 回测汇总 ===")
+    msg_lines.append(f"  • 总交易笔数: {total_trades}")
+    msg_lines.append(f"  • 累计回报率: {cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+
+    final_msg = "\n".join(msg_lines)
+    bot.send_message(chat_id=CHAT_ID, text=final_msg)
+
+else:
+    # 如果完全没有任何交易记录，也要发送“今日无信号”及一个空的回测汇总
+    empty_msg = (
+        "📊 今日无 W 底信号\n\n"
+        "=== 回测汇总 ===\n"
+        "  • 总交易笔数: 0\n"
+        "  • 累计回报率: 0.00%  (初始资金 100.00 → 最终资金 100.00)"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=empty_msg)
+
+# ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
+if pattern_points:
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(df['Close'], color='gray', alpha=0.5, label='Close')
+    plotted = set()
+
+    def safe_label(lbl):
+        if lbl in plotted:
+            return "_nolegend_"
+        plotted.add(lbl)
+        return lbl
+
+    # 标注进/出场点
+    for tr in results:
+        ax.scatter(tr['entry_time'], tr['entry'], marker='^', c='green', label=safe_label('Entry'))
+        ax.scatter(tr['exit_time'],  tr['exit'],  marker='v', c='red',   label=safe_label('Exit'))
+
+    # 标注 W 底结构
+    for p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol in pattern_points:
+        ax.scatter(df.index[p1], p1v, c='blue',  marker='o', label=safe_label('P1'))
+        ax.scatter(df.index[p3], p3v, c='blue',  marker='o', label=safe_label('P3'))
+        ax.scatter(df.index[p2], p2v, c='orange',marker='o', label=safe_label('P2'))
+        ax.hlines(p2v, df.index[p1], df.index[p3], colors='purple', linestyle='dashed', label=safe_label('Neckline'))
+        ax.scatter(df.index[bo_i], bo_v, c='cyan',  marker='x', label=safe_label('Breakout'))
+        ax.scatter(df.index[bo_i+2], pb_v, c='magenta', marker='x', label=safe_label('Pullback'))
+        ax.scatter(df.index[bo_i+4], tr_v, c='lime', marker='x', label=safe_label('Trigger'))
+
+    ax.set_title(f"{TICKER} W-Pattern Strategy")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Price")
+    ax.legend(loc="best")
+    ax.grid(True)
+    plt.tight_layout()
+    # 如果想把图也保存到 artifact，可以解除下面注释
+    # plt.savefig("w_pattern_plot.png")
+    # plt.close()
