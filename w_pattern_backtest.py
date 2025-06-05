@@ -21,7 +21,7 @@ if not BOT_TOKEN or not CHAT_ID:
     print("❌ ERROR: 环境变量 BOT_TOKEN 或 CHAT_ID 不存在，程序退出。")
     sys.exit(1)
 
-# 初始化 Telegram Bot（注意：新版 Bot.send_message 是异步协程）
+# 初始化 Telegram Bot
 bot = Bot(token=BOT_TOKEN)
 
 # ====== 参数区（方便调整） ======
@@ -48,7 +48,7 @@ TRAILING_PCT    = 0.08
 STOP_PCT        = 0.10
 
 # ====== 数据下载 ======
-# yfinance.download() 默认 auto_adjust=True，如果需要关闭请明确写 auto_adjust=False
+# 注意：yfinance.download() 的 auto_adjust 参数在新版被默认改为 True，如果想关闭请显式设置 auto_adjust=False
 df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=False)
 df.dropna(inplace=True)
 
@@ -76,7 +76,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
             continue
         p2 = int(mids[-1])
 
-        # 取出收盘价（转成 float 保证后续格式化时没有 numpy.ndarray 问题）
+        # 取出收盘价
         p1v = float(close_prices[p1].item())
         p2v = float(close_prices[p2].item())
         p3v = float(close_prices[p3].item())
@@ -94,7 +94,6 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
         if bo_i + 4 >= len(close_prices):
             continue
 
-        # 取出突破、拉回、触发点的价位
         bo_v = float(close_prices[bo_i].item())
         pb_v = float(close_prices[bo_i + 2].item())
         tr_v = float(close_prices[bo_i + 4].item())
@@ -116,12 +115,12 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
 
 
 # 小型 W
-min_idx_small = argrelextrema(close_prices, np.less_equal,    order=MIN_ORDER_SMALL)[0]
+min_idx_small = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_SMALL)[0]
 max_idx_small = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_SMALL)[0]
 detect_w(min_idx_small, max_idx_small, P1P3_TOL_SMALL, PULLBACK_LO_SMALL, PULLBACK_HI_SMALL)
 
 # 大型 W
-min_idx_large = argrelextrema(close_prices, np.less_equal,    order=MIN_ORDER_LARGE)[0]
+min_idx_large = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_LARGE)[0]
 max_idx_large = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_LARGE)[0]
 detect_w(min_idx_large, max_idx_large, P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE)
 
@@ -156,86 +155,87 @@ for entry_idx, entry_price, neckline in pullback_signals:
 
     results.append({
         'entry_time': entry_time,
-        'entry':      float(entry_price),
+        'entry':      entry_price,
         'exit_time':  df.index[exit_idx],
-        'exit':       float(exit_price),
+        'exit':       exit_price,
         'result':     result
     })
 
-# ====== 构造要发送给 Telegram 的消息 ======
-msg_lines = []
-    if results:
-        total_trades = len(results_df)
-        cap = INITIAL_CAPITAL
-        for p_pct in results_df['profit_pct']:
-            cap *= (1 + float(p_pct) / 100)
-        cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
 
-        msg_lines.append("=== 历史回测总览 ===")
-        msg_lines.append(f"• 总交易笔数：{total_trades}")
-        msg_lines.append(f"• 累计回报率：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
-        msg_lines.append("")
+# ====== 结果展示并推送到 Telegram ======
+if results:
+    results_df = pd.DataFrame(results)
+    results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
 
-        # —— 这里把 DataFrame 转成等宽字符串表格 —— #
-        # 我们只取几个关键列，entry_time, entry, exit_time, exit, profit_pct
-        df_display = results_df.copy()
-        # 把 entry_time 和 exit_time 转成 “字符串” 格式，方便 to_string 输出
-        df_display['entry_time'] = df_display['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
-        df_display['exit_time']  = df_display['exit_time'].dt.strftime('%Y-%m-%d %H:%M')
-        df_display['entry']      = df_display['entry'].map(lambda x: f"{float(x):.2f}")
-        df_display['exit']       = df_display['exit'].map(lambda x: f"{float(x):.2f}")
-        df_display['profit_pct'] = df_display['profit_pct'].map(lambda x: f"{float(x):.2f}%")
+    # —— 构造【历史回测总览】文本 —— #
+    total_trades = len(results_df)
+    cap = INITIAL_CAPITAL
+    for p_pct in results_df['profit_pct']:
+        cap *= (1 + float(p_pct) / 100)
+    cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
 
-        # 只保留这五列，且重命名一下表头
-        df_display = df_display[[
-            'entry_time', 'entry', 'exit_time', 'exit', 'profit_pct'
-        ]].rename(columns={
-            'entry_time': 'Entry Time',
-            'entry':      'Entry',
-            'exit_time':  'Exit Time',
-            'exit':       'Exit',
-            'profit_pct': 'Profit(%)'
-        })
+    msg_lines = []
+    msg_lines.append("=== 历史回测总览 ===")
+    msg_lines.append(f"• 总交易笔数：{total_trades}")
+    msg_lines.append(f"• 累计回报率：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+    msg_lines.append("")
 
-        # 用 to_string 生成等宽字体的文本；index=False 表示不打印行索引
-        table_text = df_display.to_string(index=False)
+    # —— 把逐笔交易明细以等宽表格的方式展示 —— #
+    df_display = results_df.copy()
+    df_display['entry_time'] = df_display['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
+    df_display['exit_time']  = df_display['exit_time'].dt.strftime('%Y-%m-%d %H:%M')
+    df_display['entry']      = df_display['entry'].map(lambda x: f"{float(x):.2f}")
+    df_display['exit']       = df_display['exit'].map(lambda x: f"{float(x):.2f}")
+    df_display['profit_pct'] = df_display['profit_pct'].map(lambda x: f"{float(x):.2f}%")
 
-        # 将表格包在 ``` 三引号里，以代码块的形式发给 Telegram
-        msg_lines.append("=== 逐笔交易明细（等宽表格） ===")
-        msg_lines.append("```")
-        msg_lines.append(table_text)
-        msg_lines.append("```")
-    else:
-        msg_lines.append("⚠️ 历史回测未能检测到任何交易信号。")
+    df_display = df_display[[
+        'entry_time', 'entry', 'exit_time', 'exit', 'profit_pct'
+    ]].rename(columns={
+        'entry_time': 'Entry Time',
+        'entry':      'Entry',
+        'exit_time':  'Exit Time',
+        'exit':       'Exit',
+        'profit_pct': 'Profit(%)'
+    })
 
-    # —— 当日新信号部分（同之前） —— #
-    msg_lines.append("")  # 空行
-    today_utc_date = pd.Timestamp.utcnow().normalize()
-    new_today_signals = []
-    if results:
-        for r in results:
-            entry_dt_utc = r['entry_time'].tz_convert('UTC').tz_localize(None)
-            if entry_dt_utc.date() == today_utc_date.date():
-                new_today_signals.append(r)
+    table_text = df_display.to_string(index=False)
 
-    if new_today_signals:
-        msg_lines.append(f"📈 今日新信号：共 {len(new_today_signals)} 笔")
-        for idx, r in enumerate(new_today_signals, start=1):
-            e_price = float(r['entry'])
-            line = (
-                f"{idx}. Entry: {r['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
-                f"(Trigger Time: {r['exit_time'].strftime('%Y-%m-%d %H:%M')})"
-            )
-            msg_lines.append(line)
-    else:
-        msg_lines.append("📊 今日无 W 底新信号。")
+    msg_lines.append("=== 逐笔交易明细（等宽表格） ===")
+    msg_lines.append("```")
+    msg_lines.append(table_text)
+    msg_lines.append("```")
+else:
+    msg_lines = ["⚠️ 历史回测未能检测到任何交易信号。"]
 
-    final_msg = "\n".join(msg_lines)
+# —— 当日新信号部分 —— #
+today_utc_date = pd.Timestamp.utcnow().normalize()
+new_today_signals = []
+if results:
+    for r in results:
+        entry_dt_utc = r['entry_time'].tz_convert('UTC').tz_localize(None)
+        if entry_dt_utc.date() == today_utc_date.date():
+            new_today_signals.append(r)
 
-    # 异步发送给 Telegram
-    async def _send():
-        await bot.send_message(chat_id=CHAT_ID, text=final_msg, parse_mode="Markdown")
-    asyncio.run(_send())
+msg_lines.append("")  # 空行
+if new_today_signals:
+    msg_lines.append(f"📈 今日新信号：共 {len(new_today_signals)} 笔")
+    for idx, r in enumerate(new_today_signals, start=1):
+        e_price = float(r['entry'])
+        line = (
+            f"{idx}. Entry: {r['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
+            f"(Trigger Time: {r['exit_time'].strftime('%Y-%m-%d %H:%M')})"
+        )
+        msg_lines.append(line)
+else:
+    msg_lines.append("📊 今日无 W 底新信号。")
+
+final_msg = "\n".join(msg_lines)
+
+# —— 异步发送给 Telegram —— #
+async def _send():
+    await bot.send_message(chat_id=CHAT_ID, text=final_msg, parse_mode="Markdown")
+
+asyncio.run(_send())
 
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
@@ -270,6 +270,6 @@ if pattern_points:
     ax.legend(loc="best")
     ax.grid(True)
     plt.tight_layout()
-    # 如果想把图也保存到 artifact，可以解除下面注释并让 GitHub Actions 保存 w_pattern_plot.png
+    # 如果想把图也保存到 artifact，可以解除下面注释并 GitHub Actions 把 w_pattern_plot.png 保留
     # plt.savefig("w_pattern_plot.png")
     # plt.close()
