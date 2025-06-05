@@ -3,6 +3,7 @@
 
 import os
 import sys
+import asyncio
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -20,7 +21,7 @@ if not BOT_TOKEN or not CHAT_ID:
     print("❌ ERROR: 环境变量 BOT_TOKEN 或 CHAT_ID 不存在，程序退出。")
     sys.exit(1)
 
-# 初始化 Telegram Bot
+# 初始化 Telegram Bot（注意：新版 Bot.send_message 是异步协程）
 bot = Bot(token=BOT_TOKEN)
 
 # ====== 参数区（方便调整） ======
@@ -47,9 +48,8 @@ TRAILING_PCT    = 0.08
 STOP_PCT        = 0.10
 
 # ====== 数据下载 ======
-# 注意：yfinance.download() 的 auto_adjust 参数在新版已默认设为 True（即自动做除权除息调整）。
-# 如果你之前特意写了 auto_adjust=False，会拿到“未经调整”的价格，可能导致 W 底无法识别。
-df = yf.download(TICKER, interval=INTERVAL, period=PERIOD)  # 使用默认 auto_adjust=True
+# yfinance.download() 默认 auto_adjust=True，如果需要关闭请明确写 auto_adjust=False
+df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=False)
 df.dropna(inplace=True)
 
 # 转为 numpy arrays
@@ -76,7 +76,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
             continue
         p2 = int(mids[-1])
 
-        # 取出收盘价
+        # 取出收盘价（转成 float 保证后续格式化时没有 numpy.ndarray 问题）
         p1v = float(close_prices[p1].item())
         p2v = float(close_prices[p2].item())
         p3v = float(close_prices[p3].item())
@@ -94,6 +94,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
         if bo_i + 4 >= len(close_prices):
             continue
 
+        # 取出突破、拉回、触发点的价位
         bo_v = float(close_prices[bo_i].item())
         pb_v = float(close_prices[bo_i + 2].item())
         tr_v = float(close_prices[bo_i + 4].item())
@@ -115,12 +116,12 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
 
 
 # 小型 W
-min_idx_small = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_SMALL)[0]
+min_idx_small = argrelextrema(close_prices, np.less_equal,    order=MIN_ORDER_SMALL)[0]
 max_idx_small = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_SMALL)[0]
 detect_w(min_idx_small, max_idx_small, P1P3_TOL_SMALL, PULLBACK_LO_SMALL, PULLBACK_HI_SMALL)
 
 # 大型 W
-min_idx_large = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_LARGE)[0]
+min_idx_large = argrelextrema(close_prices, np.less_equal,    order=MIN_ORDER_LARGE)[0]
 max_idx_large = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_LARGE)[0]
 detect_w(min_idx_large, max_idx_large, P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE)
 
@@ -133,13 +134,11 @@ for entry_idx, entry_price, neckline in pullback_signals:
     exit_price = None
     exit_idx   = None
 
-    # 从进场点开始，一直到最后一根 K 时检测止盈/止损
     for offset in range(1, len(df) - entry_idx):
         h = float(high_prices[entry_idx + offset].item())
         l = float(low_prices[entry_idx + offset].item())
         peak = max(peak, h)
 
-        # 移动止盈和固定止损
         trail_stop = peak * (1 - TRAILING_PCT)
         fixed_stop = entry_price * (1 - STOP_PCT)
         stop_level = max(trail_stop, fixed_stop)
@@ -151,86 +150,97 @@ for entry_idx, entry_price, neckline in pullback_signals:
             break
 
     if result is None:
-        # 若整个持有期都没被止损/止盈，就跑到最后一根 K 收盘平仓
         exit_idx   = len(df) - 1
         exit_price = float(close_prices[exit_idx].item())
         result     = 'win' if exit_price > entry_price else 'loss'
 
     results.append({
         'entry_time': entry_time,
-        'entry':      entry_price,
+        'entry':      float(entry_price),
         'exit_time':  df.index[exit_idx],
-        'exit':       exit_price,
+        'exit':       float(exit_price),
         'result':     result
     })
 
-# ====== 结果展示并推送到 Telegram ======
-# 先把回测结果整理成 DataFrame
+# ====== 构造要发送给 Telegram 的消息 ======
+msg_lines = []
+
+# （1）先加一个“历史回测总笔数”＋“历史回测累计回报”
 if results:
     results_df = pd.DataFrame(results)
     results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
 
-    # —— 调试：先把整段历史到底有多少笔信号打印一下 —— #
-    print(f"[DEBUG] 历史回测共检测到 {len(results_df)} 笔交易信号")
-
-    # 计算当日日期 (UTC)
-    today_utc = pd.Timestamp.utcnow().normalize()
-
-    # 确保 entry_time 是 datetime with timezone，再转成 UTC 日期
-    if not pd.api.types.is_datetime64tz_dtype(results_df['entry_time']):
-        # 如果 df.index 不是 tz-aware，就先 localize 再转 UTC；这里假设你的数据本来是台湾时区
-        results_df['entry_time'] = results_df['entry_time'].dt.tz_localize('Asia/Taipei').dt.tz_convert('UTC')
-
-    results_df['entry_date'] = results_df['entry_time'].dt.tz_convert('UTC').dt.normalize()
-    todays_df = results_df[results_df['entry_date'] == today_utc]
-
-    msg_lines = []
-
-    if not todays_df.empty:
-        msg_lines.append(f"📈 今日（{today_utc.strftime('%Y-%m-%d')}）W 底信号：")
-        for idx, row in todays_df.iterrows():
-            e_price = float(row['entry'])
-            x_price = float(row['exit'])
-            p_pct   = float(row['profit_pct'])
-            line = (
-                f"  • Signal {idx+1}: Entry {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}, "
-                f"Exit {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}, "
-                f"Profit {p_pct:.2f}%"
-            )
-            msg_lines.append(line)
-    else:
-        msg_lines.append("📊 今日无 W 底信号")
-
-    # 加入“回测汇总”部分
+    # 历史回测总笔数
     total_trades = len(results_df)
+
+    # 历史回测累计资金曲线
     cap = INITIAL_CAPITAL
     for p_pct in results_df['profit_pct']:
         cap *= (1 + float(p_pct) / 100)
     cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
 
-    msg_lines.append("\n=== 回测汇总 ===")
-    msg_lines.append(f"  • 总交易笔数: {total_trades}")
-    msg_lines.append(f"  • 累计回报率: {cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+    msg_lines.append(f"=== 历史回测总览 ===")
+    msg_lines.append(f"• 总交易笔数：{total_trades}")
+    msg_lines.append(f"• 累计回报率：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+    msg_lines.append("")
 
-    final_msg = "\n".join(msg_lines)
-    bot.send_message(chat_id=CHAT_ID, text=final_msg)
-
+    # （2）再列出每一笔交易的详细进／出场和收益
+    msg_lines.append("=== 逐笔交易明细 ===")
+    for idx, row in results_df.iterrows():
+        e_price = float(row['entry'])
+        x_price = float(row['exit'])
+        p_pct   = float(row['profit_pct'])
+        line = (
+            f"{idx+1}. Entry: {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
+            f"Exit: {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}  "
+            f"Profit: {p_pct:.2f}%"
+        )
+        msg_lines.append(line)
 else:
-    # 如果完全没有任何交易记录，也要发送“今日无信号”及一个空的回测汇总
-    empty_msg = (
-        "📊 今日无 W 底信号\n\n"
-        "=== 回测汇总 ===\n"
-        "  • 总交易笔数: 0\n"
-        "  • 累计回报率: 0.00%  (初始资金 100.00 → 最终资金 100.00)"
-    )
-    bot.send_message(chat_id=CHAT_ID, text=empty_msg)
+    # 历史回测没有信号
+    msg_lines.append("⚠️ 历史回测未能检测到任何交易信号。")
+
+# （3）当日是否有新信号？ 
+# 转成「UTC naive 日期」后做比较
+today_utc_date = pd.Timestamp.utcnow().normalize()
+new_today_signals = []
+if results:
+    for r in results:
+        # 将 entry_time（带时区）统一转成 UTC 且去掉时区后再比对「日期」
+        entry_dt_utc = r['entry_time'].tz_convert('UTC').tz_localize(None)
+        if entry_dt_utc.date() == today_utc_date.date():
+            new_today_signals.append(r)
+
+msg_lines.append("")  # 空行分隔
+if new_today_signals:
+    msg_lines.append(f"📈 今日新信号：共 {len(new_today_signals)} 笔")
+    for idx, r in enumerate(new_today_signals, start=1):
+        e_price = float(r['entry'])
+        x_dt    = r['exit_time']
+        line = (
+            f"{idx}. Entry: {r['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
+            f"(Trigger Time: {r['exit_time'].strftime('%Y-%m-%d %H:%M')})"
+        )
+        msg_lines.append(line)
+else:
+    msg_lines.append("📊 今日无 W 底新信号。")
+
+final_msg = "\n".join(msg_lines)
+
+
+# ====== 把消息发送到 Telegram —— 注意用 asyncio.run(awaitable) =====
+async def _send():
+    await bot.send_message(chat_id=CHAT_ID, text=final_msg)
+
+# 直接在脚本里 run
+asyncio.run(_send())
+
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
 if pattern_points:
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df['Close'], color='gray', alpha=0.5, label='Close')
     plotted = set()
-
     def safe_label(lbl):
         if lbl in plotted:
             return "_nolegend_"
@@ -258,6 +268,6 @@ if pattern_points:
     ax.legend(loc="best")
     ax.grid(True)
     plt.tight_layout()
-    # 如果想把图也保存到 artifact，可以解除下面注释
+    # 如果想把图也保存到 artifact，可以解除下面注释并让 GitHub Actions 保存 w_pattern_plot.png
     # plt.savefig("w_pattern_plot.png")
     # plt.close()
