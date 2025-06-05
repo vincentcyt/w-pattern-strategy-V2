@@ -165,18 +165,22 @@ else:
     print(f"⚠️ 无交易信号，共 {len(pullback_signals)} 个信号")
 
 # ====== 将信号发到 Telegram ======
+# ====== 将信号发到 Telegram ======
 if len(results) > 0:
     msg = f"📊 {TICKER} W 底策略回测结果：\n"
     for idx, row in results_df.iterrows():
-        # 必须把 row['entry']、row['exit'] 转成 float 才能用 {:.2f}
+        # 先把 timestamp 转成字符串
         entry_t_str = row['entry_time'].strftime('%Y-%m-%d %H:%M')
         exit_t_str  = row['exit_time'].strftime('%Y-%m-%d %H:%M')
+        # 再把数值先转成 float，才能用 {:.2f}
         entry_p     = float(row['entry'])
         exit_p      = float(row['exit'])
         profit_pct  = float(row['profit_pct'])
-        msg += (f"{idx+1}. Entry: {entry_t_str} @ {entry_p:.2f}，"
-                f"Exit: {exit_t_str} @ {exit_p:.2f}，"
-                f"Profit: {profit_pct:.2f}%\n")
+        msg += (
+            f"{idx+1}. Entry: {entry_t_str} @ {entry_p:.2f}，"
+            f"Exit: {exit_t_str} @ {exit_p:.2f}，"
+            f"Profit: {profit_pct:.2f}%\n"
+        )
     msg += f"\n初始 {INITIAL_CAPITAL:.2f}，最终 {cap:.2f}，累计 {cum_ret:.2f}%"
     bot.send_message(chat_id=CHAT_ID, text=msg)
 
