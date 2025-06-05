@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.signal import argrelextrema
 
 
- ====== 参数区（方便调整） ======
+# ====== 参数区（方便调整） ======
 TICKER = "2330.TW"
 INTERVAL = "60m"        # 数据周期
 PERIOD = "600d"         # 数据长度
