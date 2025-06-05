@@ -1,20 +1,19 @@
-name: 每日 W 底策略回测并推送 Telegram
+name: Daily W-Pattern Backtest
 
 on:
   schedule:
-    # 将此处设置为您希望的 UTC 调度时间
-    - cron: '0 12 * * *' 
+    - cron: '0 1 * * *'    # 每天 UTC 贵国时间 09:00 触发（例：东八区早上 09:00）
   workflow_dispatch:
 
 jobs:
-  backtest-and-notify:
+  run-backtest:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout 代码
+      - name: Checkout 仓库
         uses: actions/checkout@v3
 
-      - name: 设置 Python 环境
+      - name: 设置 Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
@@ -24,7 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 运行 W 底回测脚本并推送 Telegram
+      - name: 运行 W 底回测脚本并推送到 Telegram
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID:   ${{ secrets.CHAT_ID }}
