@@ -160,35 +160,55 @@ for entry_idx, entry_price, neckline in pullback_signals:
         'result':     result
     })
 
-
 # ====== 结果展示并推送到 Telegram ======
+# 先把回测结果整理成 DataFrame
 if results:
     results_df = pd.DataFrame(results)
     results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
 
-    # 构造要发送的文本
-    msg_lines = []
-    for idx, row in results_df.iterrows():
-        e_price = float(row['entry'])
-        x_price = float(row['exit'])
-        p_pct   = float(row['profit_pct'])
-        line = (
-            f"{idx+1}. Entry: {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}  "
-            f"Exit: {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}  "
-            f"Profit: {p_pct:.2f}%"
-        )
-        msg_lines.append(line)
+    # 计算当日日期
+    today_utc = pd.Timestamp.utcnow().normalize()
+    # 如果你的 df.index 有本地时区，可改成 .tz_convert("UTC").normalize()
+    # today_local = pd.Timestamp.now(tz=df.index.tz).normalize()
 
+    # 筛选“今日信号”
+    results_df['entry_date'] = results_df['entry_time'].dt.tz_convert('UTC').dt.normalize()
+    todays_df = results_df[results_df['entry_date'] == today_utc]
+
+    msg_lines = []
+
+    if not todays_df.empty:
+        msg_lines.append(f"📈 今日 ({today_utc.strftime('%Y-%m-%d')}) W 底信号：")
+        for idx, row in todays_df.iterrows():
+            e_price = float(row['entry'])
+            x_price = float(row['exit'])
+            p_pct   = float(row['profit_pct'])
+            line = (
+                f"  • Signal {idx+1}: Entry {row['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {e_price:.2f}, "
+                f"Exit {row['exit_time'].strftime('%Y-%m-%d %H:%M')} @ {x_price:.2f}, "
+                f"Profit {p_pct:.2f}%"
+            )
+            msg_lines.append(line)
+    else:
+        msg_lines.append("📊 今日无 W 底信号")
+
+    # 加入“回测汇总”部分
+    total_trades = len(results_df)
     cap = INITIAL_CAPITAL
     for p_pct in results_df['profit_pct']:
         cap *= (1 + float(p_pct) / 100)
     cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
-    msg_lines.append(f"\n初始资金：{INITIAL_CAPITAL:.2f}，最终资金：{cap:.2f}，累计回报：{cum_ret:.2f}%")
+
+    msg_lines.append("\n=== 回测汇总 ===")
+    msg_lines.append(f"  • 总交易笔数: {total_trades}")
+    msg_lines.append(f"  • 累计回报率: {cum_ret:.2f}% (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
 
     final_msg = "\n".join(msg_lines)
     bot.send_message(chat_id=CHAT_ID, text=final_msg)
 else:
-    bot.send_message(chat_id=CHAT_ID, text="📊 今日无 W 底信号")
+    # 如果完全没有任何交易记录，也要发送“今日无信号”及一个空的回测汇总
+    empty_msg = "📊 今日无 W 底信号\n\n=== 回测汇总 ===\n  • 总交易笔数: 0\n  • 累计回报率: 0.00% (初始资金 100.00 → 最终资金 100.00)"
+    bot.send_message(chat_id=CHAT_ID, text=empty_msg)
 
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
@@ -223,6 +243,6 @@ if pattern_points:
     ax.legend(loc="best")
     ax.grid(True)
     plt.tight_layout()
-    # 如果想把图也保存到 artifact，可以解除下面注释并 GitHub Actions 把 w_pattern_plot.png 保留
+    # 如果想把图也保存到 artifact，可以解除下面注释
     # plt.savefig("w_pattern_plot.png")
     # plt.close()
