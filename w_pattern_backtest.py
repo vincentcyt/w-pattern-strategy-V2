@@ -189,6 +189,7 @@ if results:
     bot.send_message(chat_id=CHAT_ID, text=final_msg)
 else:
     bot.send_message(chat_id=CHAT_ID, text="📊 今日无 W 底信号")
+     bot.send_message(chat_id=CHAT_ID, text=final_msg)
 
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
