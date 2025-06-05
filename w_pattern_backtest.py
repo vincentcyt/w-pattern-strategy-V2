@@ -13,7 +13,7 @@ import telegram
 # BOT_TOKEN: 你从 @BotFather 那里得到的 Bot 令牌
 # CHAT_ID:  你要发送消息的 Telegram 聊天 ID（可以是私聊 ID 或 群组 ID）
 BOT_TOKEN ="7231722124:AAHyhoDh04thsN-F3vRxsrxWIDp7WUOzuBk"
-CHAT_ID   = "7528980634"
+CHAT_ID   = "1243234108"
 
 bot = telegram.Bot(token=BOT_TOKEN)
 
