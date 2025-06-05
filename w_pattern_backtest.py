@@ -199,9 +199,7 @@ if results:
 else:
     print("⚠️ 无交易信号，共 0 个信号")
     bot.send_message(chat_id=CHAT_ID, text=f"⚠️ {TICKER} 在给定期间内未检测到 W 底信号。")
-else:
-    # 如果 pullback_signals 非空但 results 为空（极少情况），也视为今日无信号
-    bot.send_message(chat_id=CHAT_ID, text=f"❌ {TICKER} 今日無訊號")
+
 
 # ====== 绘图 ======
 fig, ax = plt.subplots(figsize=(14, 7))
