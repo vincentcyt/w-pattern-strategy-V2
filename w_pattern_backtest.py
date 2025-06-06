@@ -3,6 +3,7 @@
 
 import os
 import sys
+import asyncio
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -20,7 +21,7 @@ if not BOT_TOKEN or not CHAT_ID:
     print("❌ ERROR: 环境变量 BOT_TOKEN 或 CHAT_ID 不存在，程序退出。")
     sys.exit(1)
 
-# 初始化 Telegram Bot
+# 初始化 Telegram Bot（注意：在 python-telegram-bot v20+ 里，Bot.send_message 已经是一个 coroutine）
 bot = Bot(token=BOT_TOKEN)
 
 # ====== 参数区（方便调整） ======
@@ -112,6 +113,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
         pullback_signals.append((bo_i + 4, tr_v, neckline))
         pattern_points.append((p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol_p1p3))
 
+
 # 小型 W
 min_idx_small = argrelextrema(close_prices, np.less_equal, order=MIN_ORDER_SMALL)[0]
 max_idx_small = argrelextrema(close_prices, np.greater_equal, order=MIN_ORDER_SMALL)[0]
@@ -172,7 +174,7 @@ if completed_trades:
     results_df = pd.DataFrame(completed_trades)
     results_df['profit_pct'] = (results_df['exit'] - results_df['entry']) / results_df['entry'] * 100
 
-    # 构造要发送的文本
+    # 构造要发送的“历史已完成”文本
     msg_lines = ["📈【历史已完成交易】"]
     for idx, row in results_df.iterrows():
         e_price = float(row['entry'])
@@ -189,7 +191,9 @@ if completed_trades:
     for p_pct in results_df['profit_pct']:
         cap *= (1 + float(p_pct) / 100)
     cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
-    msg_lines.append(f"\n总交易笔数：{len(results_df)}，累计回报：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})")
+    msg_lines.append(
+        f"\n总交易笔数：{len(results_df)}，累计回报：{cum_ret:.2f}%  (初始资金 {INITIAL_CAPITAL:.2f} → 最终资金 {cap:.2f})"
+    )
 else:
     msg_lines = ["📈【历史已完成交易】\n无已完成记录"]
 
@@ -217,7 +221,6 @@ if completed_trades:
 
 # 如果今天没有已完成交易，但有“新开仓信号”（推给 open_trades）
 if not today_signals and open_trades:
-    # 检查 open_trades 中有没有 entry_time 属于今天
     for ot in open_trades:
         et = pd.to_datetime(ot['entry_time'])
         if et.tz_convert('UTC').date() == today_date:
@@ -229,11 +232,16 @@ if not today_signals and open_trades:
 if not today_signals:
     today_signals = ["📊 今日无 W 底信号"]
 
-# 将“历史已完成交易”与“今日信号”合并成一条消息
+# 合并“历史已完成”与“今日信号”成一条完整的消息
 final_msg = "\n".join(msg_lines + ["\n📅【今日信号】"] + today_signals)
 
-# 推送到 Telegram
-bot.send_message(chat_id=CHAT_ID, text=final_msg)
+# —— 因为 Bot.send_message 是 coroutine，必须通过 asyncio.run 去执行 —— #
+async def _send_to_telegram(text):
+    await bot.send_message(chat_id=CHAT_ID, text=text)
+
+# 真正发送
+asyncio.run(_send_to_telegram(final_msg))
+
 
 # ====== （可选）绘图部分，仅供调试时查看结构，不必 GitHub Actions 上传 =====#
 if pattern_points:
