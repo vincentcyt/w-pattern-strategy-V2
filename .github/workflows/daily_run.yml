@@ -6,8 +6,7 @@ on:
     - cron: '0 0 * * *'
     # 台湾时间每天 12:00 → UTC 04:00
     - cron: '0 4 * * *'
-    # 台湾时间每天 13:35 → UTC 05:35
-    - cron: '35 5 * * *'
+  
   workflow_dispatch:
 
 jobs:
