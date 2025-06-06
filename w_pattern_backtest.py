@@ -30,14 +30,7 @@ if pattern_points:
             edgecolors='black', label=safe_label('未平仓 Entry')
         )
 
-    # 标注 W 底结构
-    for p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol in pattern_points:
 
-        ax.hlines(
-            p2v, df.index[p1], df.index[p3],
-            colors='purple', linestyle='dashed',
-            label=safe_label('Neckline')
-        )
         
 
     ax.set_title(f"{TICKER} W-Pattern Strategy")
