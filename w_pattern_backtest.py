@@ -42,8 +42,8 @@ PULLBACK_LO_LARGE, PULLBACK_HI_LARGE = 0.78, 1.4
 # 统一参数
 BREAKOUT_PCT     = 0.00001
 INITIAL_CAPITAL  = 100.0
-TRAILING_PCT     = 0.07
-STOP_PCT         = 0.03
+TRAILING_PCT     = 0.08
+STOP_PCT         = 0.10
 
 # ====== 数据下载 ======
 # 注意：yfinance.download() 中 auto_adjust 的默认值已改为 True，如果想关闭请显式传 auto_adjust=False
@@ -173,7 +173,25 @@ for entry_idx, entry_price, neckline in pullback_signals:
             "entry":      entry_price
         })
 
-# ====== 构造要发送到 Telegram 的消息，包括已完成交易表格&未平仓交易信息 ======
+# ====== 判断“今日是否有交易信号” ======
+# 这里以 UTC 日期为准：取得当前 UTC 日期，然后查看 completed_trades/open_trades 里有没有 entry_time 属于今天
+today_utc_date = pd.Timestamp.utcnow().date()
+
+has_signal_today = False
+# 检查已平仓交易中是否有 entry_time 属于今天
+for trade in completed_trades:
+    # trade["entry_time"] 带时区，先转为 UTC 再取 .date()
+    if trade["entry_time"].tz_convert("UTC").date() == today_utc_date:
+        has_signal_today = True
+        break
+# 如果还没发现，再检查未平仓交易
+if not has_signal_today:
+    for ot in open_trades:
+        if ot["entry_time"].tz_convert("UTC").date() == today_utc_date:
+            has_signal_today = True
+            break
+
+# ====== 构造要发送到 Telegram 的消息，包括“今日信号”+已完成交易表格&未平仓信息 ======
 if completed_trades:
     comp_df = pd.DataFrame(completed_trades)
     comp_df["profit_pct"] = (comp_df["exit"] - comp_df["entry"]) / comp_df["entry"] * 100
@@ -200,10 +218,14 @@ if completed_trades:
 
     header   = f"📊 历史回测： 共 {len(completed_trades)} 笔已完成交易"
     summary  = f"初始资金：{INITIAL_CAPITAL:.2f} → 最终资金：{cap:.2f} ，累计回报：{cum_ret:.2f}%"
-    final_msg = f"{header}\n```\n{table_text}\n```\n{summary}"
+    # “今日是否有信号”行
+    today_line = f"📅 今日是否有交易信号：{'✅ 有' if has_signal_today else '❌ 无'}"
+    final_msg = f"{today_line}\n{header}\n```\n{table_text}\n```\n{summary}"
 else:
     # 没有已平仓交易
+    today_line = f"📅 今日是否有交易信号：{'✅ 有' if has_signal_today else '❌ 无'}"
     final_msg = (
+        f"{today_line}\n"
         "📊 历史回测： 共 0 笔已完成交易\n"
         f"初始资金：{INITIAL_CAPITAL:.2f} → 最终资金：{INITIAL_CAPITAL:.2f} ，累计回报：0.00%"
     )
