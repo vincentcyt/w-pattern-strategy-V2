@@ -44,7 +44,7 @@ PULLBACK_HI_LARGE   = 1.4
 # 统一参数
 BREAKOUT_PCT    = 0.00001
 INITIAL_CAPITAL = 100.0
-TRAILING_PCT    = 0.08
+TRAILING_PCT    = 0.06
 STOP_PCT        = 0.03
 
 # ====== 数据下载 ======
