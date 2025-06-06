@@ -285,14 +285,7 @@ if pattern_points:
         ax.scatter(tr['exit_time'],  tr['exit'],  marker='v', c='red',   label=safe_label('Exit'))
 
     # 标注 W 底结构
-    for p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol in pattern_points:
-        ax.scatter(df.index[p1], p1v, c='blue',  marker='o', label=safe_label('P1'))
-        ax.scatter(df.index[p3], p3v, c='blue',  marker='o', label=safe_label('P3'))
-        ax.scatter(df.index[p2], p2v, c='orange',marker='o', label=safe_label('P2'))
-        ax.hlines(p2v, df.index[p1], df.index[p3], colors='purple', linestyle='dashed', label=safe_label('Neckline'))
-        ax.scatter(df.index[bo_i], bo_v, c='cyan',  marker='x', label=safe_label('Breakout'))
-        ax.scatter(df.index[bo_i+2], pb_v, c='magenta', marker='x', label=safe_label('Pullback'))
-        ax.scatter(df.index[bo_i+4], tr_v, c='lime', marker='x', label=safe_label('Trigger'))
+
 
     ax.set_title(f"{TICKER} W-Pattern Strategy")
     ax.set_xlabel("Time")
