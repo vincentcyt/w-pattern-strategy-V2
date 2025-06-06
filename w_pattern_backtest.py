@@ -44,8 +44,8 @@ PULLBACK_HI_LARGE   = 1.4
 # 统一参数
 BREAKOUT_PCT    = 0.00001
 INITIAL_CAPITAL = 100.0
-TRAILING_PCT    = 0.08
-STOP_PCT        = 0.10
+TRAILING_PCT    = 0.07
+STOP_PCT        = 0.03
 
 # ====== 数据下载 ======
 # “auto_adjust=False” 可保证你拉出来的是原始 OHLC 而不是已除权价格
