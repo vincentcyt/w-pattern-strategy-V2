@@ -21,11 +21,11 @@ if not BOT_TOKEN or not CHAT_ID:
     print("❌ ERROR: 环境变量 BOT_TOKEN 或 CHAT_ID 不存在，程序退出。")
     sys.exit(1)
 
-# 初始化 Telegram Bot（python-telegram-bot v20.x 以上采用异步接口）
+# 初始化 Telegram Bot（python-telegram-bot v20 以上使用异步接口）
 bot = Bot(token=BOT_TOKEN)
 
 # ====== 参数区（方便调整） ======
-TICKER           = "2330.TW"
+TICKER           = "2330.TW"   # 注意：yfinance 要求大写后缀
 INTERVAL         = "60m"
 PERIOD           = "600d"
 
@@ -46,18 +46,18 @@ TRAILING_PCT     = 0.08
 STOP_PCT         = 0.10
 
 # ====== 数据下载 ======
-# 注意：yfinance.download() 中 auto_adjust 的默认值已改为 True，如需关闭请显式传 auto_adjust=False
+# 注意：yfinance.download() 中 auto_adjust 的默认值已改为 True，如果想关闭请显式传 auto_adjust=False
 df = yf.download(TICKER, interval=INTERVAL, period=PERIOD, auto_adjust=False)
 df.dropna(inplace=True)
 
-# 将价格列转为 numpy array，便于快速访问
+# 转为 numpy arrays，便于快速索引
 close_prices = df["Close"].to_numpy()
 high_prices  = df["High"].to_numpy()
 low_prices   = df["Low"].to_numpy()
 
 # ====== 寻找 W 底信号 ======
 pullback_signals = []   # 存放 (trigger_idx, trigger_price, neckline_price)
-pattern_points   = []   # 如果需要画结构，可用
+pattern_points   = []   # 如果以后需要画结构，可以保留这些点
 
 def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
     """
@@ -76,7 +76,7 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
             continue
         p2 = int(mids[-1])
 
-        # 取出收盘价
+        # 取出收盘价并转换为 float
         p1v = float(close_prices[p1].item())
         p2v = float(close_prices[p2].item())
         p3v = float(close_prices[p3].item())
@@ -85,24 +85,25 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
         if not (p1v < p2v and p3v < p2v):
             continue
 
-        # P1 与 P3 必须在 tol_p1p3 范围内
+        # P1 与 P3 必须在 tol_p1p3 范围内（相对误差）
         if abs(p1v - p3v) / p1v > tol_p1p3:
             continue
 
         neckline = p2v
         bo_i     = p3 + 1
+        # 确保后面可以取到触发点
         if bo_i + 4 >= len(close_prices):
             continue
 
-        bo_v = float(close_prices[bo_i].item())      # 突破点价格
-        pb_v = float(close_prices[bo_i + 2].item())  # 拉回点价格
-        tr_v = float(close_prices[bo_i + 4].item())  # 触发点价格
+        bo_v = float(close_prices[bo_i].item())      # 突破点
+        pb_v = float(close_prices[bo_i + 2].item())  # 拉回点
+        tr_v = float(close_prices[bo_i + 4].item())  # 触发点
 
         # 1) 突破必须高于 颈线 * (1 + BREAKOUT_PCT)
         if bo_v <= neckline * (1 + BREAKOUT_PCT):
             continue
 
-        # 2) 拉回点必须在 [neckline * lo, neckline * hi] 区间
+        # 2) 拉回点必须在 [neckline * lo, neckline * hi]
         if not (neckline * lo < pb_v < neckline * hi):
             continue
 
@@ -110,10 +111,9 @@ def detect_w(min_idx, max_idx, tol_p1p3, lo, hi):
         if tr_v <= pb_v:
             continue
 
-        # 符合条件，记录信号
+        # 符合条件，记录触发点
         pullback_signals.append((bo_i + 4, tr_v, neckline))
         pattern_points.append((p1, p1v, p2, p2v, p3, p3v, bo_i, bo_v, pb_v, tr_v, tol_p1p3))
-
 
 # -------- 小型 W --------
 min_idx_small = argrelextrema(close_prices, np.less_equal,    order=MIN_ORDER_SMALL)[0]
@@ -128,100 +128,99 @@ detect_w(min_idx_large, max_idx_large,
          P1P3_TOL_LARGE, PULLBACK_LO_LARGE, PULLBACK_HI_LARGE)
 
 # ====== 回测阶段：分别区分“已平仓”与“未平仓” ======
-completed_trades = []  # 每笔已平仓：{'entry_time','entry','exit_time','exit'}
-open_trades      = []  # 每笔未平仓： {'entry_time','entry'}
+completed_trades = []  # 存放已平仓交易：{entry_time,entry,exit_time,exit}
+open_trades      = []  # 存放未平仓交易：{entry_time,entry}
 
 for entry_idx, entry_price, neckline in pullback_signals:
     entry_time  = df.index[entry_idx]
     peak        = entry_price
     exit_price  = None
     exit_idx    = None
-    result_flag = False  # 是否触发止盈/止损
+    triggered   = False  # 是否触发止盈/止损
 
-    # 向后扫描，直到触发止盈/止损或到底
+    # 向后扫描价格，判断止盈/止损
     for offset in range(1, len(df) - entry_idx):
         h = float(high_prices[entry_idx + offset].item())
         l = float(low_prices[entry_idx + offset].item())
         peak = max(peak, h)
 
-        # 计算止盈线、止损线
-        trail_stop = peak * (1 - TRAILING_PCT)     # 移动止盈
-        fixed_stop = entry_price * (1 - STOP_PCT)  # 固定止损
+        # 移动止盈
+        trail_stop = peak * (1 - TRAILING_PCT)
+        # 固定止损
+        fixed_stop = entry_price * (1 - STOP_PCT)
+        # 当期止损线
         stop_level = max(trail_stop, fixed_stop)
 
-        # 若该时段最低价触及止损线，则在该点平仓
+        # 如果当期最低价 ≤ 止损线，就在此点平仓
         if l <= stop_level:
-            exit_price  = stop_level
-            exit_idx    = entry_idx + offset
-            result_flag = True
+            exit_price = stop_level
+            exit_idx   = entry_idx + offset
+            triggered  = True
             break
 
-    if result_flag:
+    if triggered:
         exit_time = df.index[exit_idx]
         completed_trades.append({
-            'entry_time': entry_time,
-            'entry':      entry_price,
-            'exit_time':  exit_time,
-            'exit':       exit_price
+            "entry_time": entry_time,
+            "entry":      entry_price,
+            "exit_time":  exit_time,
+            "exit":       exit_price
         })
     else:
-        # 到数据末尾仍未触及止盈/止损，则视为“未平仓”
+        # 未触发止盈/止损，视为“未平仓”
         open_trades.append({
-            'entry_time': entry_time,
-            'entry':      entry_price
+            "entry_time": entry_time,
+            "entry":      entry_price
         })
 
-# ====== 构造要发送到 Telegram 的消息（含表格） ======
-# 构建已完成交易的 DataFrame
+# ====== 构造要发送到 Telegram 的消息，包括已完成交易表格&未平仓交易信息 ======
 if completed_trades:
     comp_df = pd.DataFrame(completed_trades)
-    comp_df['profit_pct'] = (comp_df['exit'] - comp_df['entry']) / comp_df['entry'] * 100
+    comp_df["profit_pct"] = (comp_df["exit"] - comp_df["entry"]) / comp_df["entry"] * 100
 
     # 生成 ASCII 表格：不输出 index，列宽对齐
-    table_text = comp_df.to_string(index=False,
-                                   columns=['entry_time','entry','exit_time','exit','profit_pct'],
-                                   justify='left',
-                                   formatters={
-                                       'entry_time': lambda v: v.strftime('%Y-%m-%d %H:%M'),
-                                       'exit_time':  lambda v: v.strftime('%Y-%m-%d %H:%M'),
-                                       'entry':      lambda v: f"{v:.2f}",
-                                       'exit':       lambda v: f"{v:.2f}",
-                                       'profit_pct': lambda v: f"{v:.2f}%"
-                                   })
+    table_text = comp_df.to_string(
+        index=False,
+        columns=["entry_time", "entry", "exit_time", "exit", "profit_pct"],
+        justify="left",
+        formatters={
+            "entry_time": lambda v: v.strftime("%Y-%m-%d %H:%M"),
+            "exit_time":  lambda v: v.strftime("%Y-%m-%d %H:%M"),
+            "entry":      lambda v: f"{v:.2f}",
+            "exit":       lambda v: f"{v:.2f}",
+            "profit_pct": lambda v: f"{v:.2f}%"
+        }
+    )
 
-    # 计算总回报
+    # 计算累计回报
     cap = INITIAL_CAPITAL
-    for p_pct in comp_df['profit_pct']:
+    for p_pct in comp_df["profit_pct"]:
         cap *= (1 + float(p_pct) / 100)
     cum_ret = (cap / INITIAL_CAPITAL - 1) * 100
 
-    header = f"📊 历史回测： 共 {len(completed_trades)} 笔已完成交易\n"
-    summary = f"\n初始资金：{INITIAL_CAPITAL:.2f} → 最终资金：{cap:.2f} ，累计回报：{cum_ret:.2f}%"
-    final_msg = header + "```\n" + table_text + "\n```" + summary
+    header   = f"📊 历史回测： 共 {len(completed_trades)} 笔已完成交易"
+    summary  = f"初始资金：{INITIAL_CAPITAL:.2f} → 最终资金：{cap:.2f} ，累计回报：{cum_ret:.2f}%"
+    final_msg = f"{header}\n```\n{table_text}\n```\n{summary}"
 else:
-    final_msg = "📊 历史回测： 共 0 笔已完成交易\n初始资金：{:.2f} → 最终资金：{:.2f} ，累计回报：0.00%".format(INITIAL_CAPITAL, INITIAL_CAPITAL)
+    # 没有已平仓交易
+    final_msg = (
+        "📊 历史回测： 共 0 笔已完成交易\n"
+        f"初始资金：{INITIAL_CAPITAL:.2f} → 最终资金：{INITIAL_CAPITAL:.2f} ，累计回报：0.00%"
+    )
 
-# 如果有未平仓交易，也附加到消息末尾
+# 如果有未平仓交易，也附加在消息末尾
 if open_trades:
-    open_lines = ["\n📌 当前共有 {} 笔未平仓：".format(len(open_trades))]
+    open_lines = [f"\n📌 当前共有 {len(open_trades)} 笔未平仓交易："]
     for idx, ot in enumerate(open_trades, start=1):
         open_lines.append(
             f"{idx}. Entry: {ot['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {ot['entry']:.2f}"
         )
     final_msg += "\n" + "\n".join(open_lines)
 
-# —— 异步发送文字消息 —— #
-async def _send_text():
-    # 使用 Markdown 格式 + 纯文本代码块标注
-    await bot.send_message(chat_id=CHAT_ID,
-                           text=final_msg,
-                           parse_mode='Markdown')
+# 将要发送给 Telegram 的图片文件名
+chart_file = "w_pattern_plot.png"
 
-asyncio.run(_send_text())
-
-
-# ====== 绘图并上传到 Telegram =====#
-# 只保留“已完成交易”进/出场点，以及“未平仓”进场点
+# ====== 画图：只保留“已完成交易”进/出点 & “未平仓”进场点 ======
 if completed_trades or open_trades:
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(df["Close"], color="gray", alpha=0.5, label="Close")
@@ -233,7 +232,7 @@ if completed_trades or open_trades:
         plotted.add(lbl)
         return lbl
 
-    # 标注已完成交易的进/出场 (绿/红)
+    # 标注已完成交易的进/出场点 (绿色/红色)
     for tr in completed_trades:
         ax.scatter(
             tr["entry_time"], tr["entry"],
@@ -246,7 +245,7 @@ if completed_trades or open_trades:
             label=safe_label("Exit")
         )
 
-    # 标注未平仓交易的进场点 (黄)
+    # 标注未平仓交易的进场点 (黄色)
     for ot in open_trades:
         ax.scatter(
             ot["entry_time"], ot["entry"],
@@ -261,13 +260,29 @@ if completed_trades or open_trades:
     ax.grid(True)
     plt.tight_layout()
 
-    chart_file = "w_pattern_plot.png"
+    # 保存图片
     plt.savefig(chart_file)
     plt.close()
 
-    # —— 异步发送图片 —— #
-    async def _send_photo():
-        with open(chart_file, "rb") as img:
-            await bot.send_photo(chat_id=CHAT_ID, photo=img)
+# ====== 将“文字消息”与“图片”一起通过一次 asyncio.run 发送 =====#
+async def main():
+    # 1) 发送文字消息（Markdown 格式）
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=final_msg,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"[ERROR] 发送文字消息失败：{e}")
 
-    asyncio.run(_send_photo())
+    # 2) 如果存在绘图文件，则发送图片
+    if os.path.exists(chart_file):
+        try:
+            with open(chart_file, "rb") as img:
+                await bot.send_photo(chat_id=CHAT_ID, photo=img)
+        except Exception as e:
+            print(f"[ERROR] 发送图片失败：{e}")
+
+# 执行异步任务
+asyncio.run(main())
