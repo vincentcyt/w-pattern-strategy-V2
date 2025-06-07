@@ -179,18 +179,18 @@ else:
     table_txt = ""
 
 # 2) 当日信号
-today_line = f"📅 今日是否有交易信号：{'✅ 有' if has_signal_today else '❌ 无'}"
+today_line = f"📅 今日是否有交易信號：{'✅ 有' if has_signal_today else '❌ 無'}"
 
 # 3) 未平仓交易：加上最新价格与未实现盈亏
 open_txt = ""
 if open_trades:
     latest_price = float(df["Close"].iloc[-1])
-    open_lines = [f"📌 当前未平仓（共 {len(open_trades)} 笔）："]
+    open_lines = [f"📌 当前未平倉（共 {len(open_trades)} 笔）："]
     for idx, ot in enumerate(open_trades, 1):
         pnl_pct = (latest_price - ot["entry"])/ot["entry"]*100
         open_lines.append(
             f"{idx}. Entry: {ot['entry_time'].strftime('%Y-%m-%d %H:%M')} @ {ot['entry']:.2f}  "
-            f"现价: {latest_price:.2f}  未实盈亏: {pnl_pct:.2f}%"
+            f"現價: {latest_price:.2f}  未實盈虧: {pnl_pct:.2f}%"
         )
     open_txt = "\n" + "\n".join(open_lines)
 
