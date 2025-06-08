@@ -3,7 +3,7 @@ name: 每日 W 底策略回测并推送 Telegram
 on:
   schedule:
    # 台湾时间每天 08:00 → UTC 00:00
-    - cron: '30 02 * * *'
+    - cron: '50 02 * * *'
     # 台湾时间每天 12:00 → UTC 04:00
     - cron: '0 04 * * *'
   workflow_dispatch:
