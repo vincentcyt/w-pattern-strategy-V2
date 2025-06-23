@@ -43,7 +43,7 @@ PULLBACK_LO_LARGE, PULLBACK_HI_LARGE = 0.78, 1.4
 BREAKOUT_PCT     = 0.00001
 INITIAL_CAPITAL  = 100.0
 TRAILING_PCT     = 0.07
-STOP_PCT         = 0.03
+STOP_PCT         = 0.04
 
 # ====== 数据下载 ======
 # 注意：yfinance.download() 中 auto_adjust 的默认值已改为 True，如果想关闭请显式传 auto_adjust=False
